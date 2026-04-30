@@ -42,16 +42,74 @@ Correções aplicadas: padronização dos nomes, adição da vírgula e alteraç
 **3. Tabela `fornecedor`**
 PRIMARY KEY referenciava `idproduto`, coluna inexistente nessa tabela. Correção: PRIMARY KEY ajustada para apenas `idforncedor`.
 
-### Tratamentos aplicados
+### Tratamentos aplicados na planilha
 
-- **Conversão de datas**: campos de data convertidos para o formato `YYYY-MM-DD` compatível com PostgreSQL
-- **Remoção de colunas extras**: a aba `pedido_compra` continha 11 colunas vazias (`Unnamed: 12` a `Unnamed: 22`) ignoradas na importação
-- **Conversão de tipos numéricos**: campos float com valores como `1.0` foram tratados para compatibilidade com os tipos da tabela
-- **Coluna `qtde_pendente`**: presente na DDL original mas ausente na planilha — mantida na tabela com valor default 0
-- **Coluna `idfonecedor`** em `produtos_filial`: tipo alterado de `integer` para `varchar(25)` para aceitar os valores da planilha (F1, F2...)
+**1. Conversão de datas**
+Os campos de data (`data_emissao`, `data_pedido`, `data_entrega`, `data_entrada`) estavam no formato padrão do Excel. Foram convertidos para o formato `YYYY-MM-DD` exigido pelo PostgreSQL para o tipo `date`.
+
+**2. Remoção de colunas extras**
+A aba `pedido_compra` continha 11 colunas completamente vazias (`Unnamed: 12` até `Unnamed: 22`), provavelmente resultado de formatação residual da planilha. Essas colunas foram ignoradas na importação pois não correspondiam a nenhuma coluna da tabela.
+
+**3. Incompatibilidade de tipos numéricos**
+Campos como `fornecedor_id` e `filial_id` estavam armazenados como float (`1.0`, `2.0`) na planilha, mas a DDL original os definia como `integer`. Isso causou falha na importação direta via pgAdmin. Solução: os tipos das colunas foram ajustados para `float8` via `ALTER TABLE` para aceitar os valores da planilha sem perda de dados.
+
+**4. Coluna `qtde_pendente` ausente na planilha**
+A DDL do `pedido_compra` define a coluna `qtde_pendente float8 DEFAULT 0 NOT NULL`, porém essa coluna não existe na planilha fornecida. Trata-se de um campo calculado (qtde_pedida - qtde_entregue) que deveria ser derivado, não fornecido diretamente. A coluna foi mantida na tabela com valor `DEFAULT 0` e pode ser atualizada posteriormente com:
+```sql
+UPDATE pedido_compra SET qtde_pendente = qtde_pedida - qtde_entregue;
+```
+
+**5. Coluna `idfonecedor` com tipo incompatível**
+Na DDL original, `idfonecedor` em `produtos_filial` foi definida como `integer`. Porém, na planilha os valores são alfanuméricos no formato `F1`, `F2`, ..., `F20`. O tipo foi alterado para `varchar(25)` via `ALTER TABLE` para aceitar os dados reais:
+```sql
+ALTER TABLE produtos_filial ALTER COLUMN idfonecedor TYPE varchar(25);
+```
+
+### Ajustes e correções nas DDLs originais
+
+As DDLs fornecidas no case continham erros intencionais que impediam a criação das tabelas. Abaixo estão todos os erros identificados e as correções aplicadas:
+
+**Erro 1 — `entradas_mercadoria`: coluna `ordem_compra` ausente na definição**
+A PRIMARY KEY da tabela referenciava `ordem_compra`, mas essa coluna não estava declarada no `CREATE TABLE`. Sem ela, o banco retornaria erro ao tentar criar a tabela.
+```sql
+-- Correção: coluna adicionada na definição
+ordem_compra float8 DEFAULT 0 NOT NULL
+```
+
+**Erro 2 — `produtos_filial`: PRIMARY KEY referenciando coluna inexistente**
+A CONSTRAINT definia `PRIMARY KEY (filial_id, idproduto)`, mas a coluna declarada na tabela era `produto_id`. Nomes diferentes = erro na criação.
+```sql
+-- Correção: PRIMARY KEY ajustada
+CONSTRAINT produtos_filial_pkey PRIMARY KEY (filial_id, produto_id)
+```
+
+**Erro 3 — `produtos_filial`: erro de digitação no nome da coluna**
+A coluna `decricao` estava com erro de digitação (faltava o 's'). Corrigido para `descricao` para manter consistência com os dados da planilha.
+
+**Erro 4 — `produtos_filial`: vírgula faltando antes da CONSTRAINT**
+A linha anterior à CONSTRAINT não tinha vírgula, o que causaria erro de sintaxe no SQL.
+```sql
+-- Incorreto
+idfonecedor int4 NULL
+CONSTRAINT produtos_filial_pkey ...
+
+-- Correto
+idfonecedor int4 NULL,
+CONSTRAINT produtos_filial_pkey ...
+```
+
+**Erro 5 — `fornecedor`: PRIMARY KEY referenciando coluna inexistente**
+A CONSTRAINT definia `PRIMARY KEY (idforncedor, idproduto)`, mas `idproduto` não existe na tabela `fornecedor`. A tabela de fornecedor só tem `idforncedor` e `razao_social`.
+```sql
+-- Correção: PRIMARY KEY ajustada para apenas a coluna existente
+CONSTRAINT fornecedor_pkey PRIMARY KEY (idforncedor)
+```
 
 ### Método de importação final
-Devido a incompatibilidades entre os tipos de dados do CSV e as colunas do banco, os dados foram importados via **scripts INSERT gerados por Python**, garantindo controle total sobre os tipos e valores inseridos.
+
+A tentativa inicial de importação via **pgAdmin 4 (Import/Export CSV)** falhou devido às incompatibilidades de tipos descritas acima. Para garantir a integridade dos dados, a importação foi realizada via **scripts SQL com comandos INSERT**, executados diretamente no Query Tool do pgAdmin. Essa abordagem permitiu controle total sobre os valores inseridos e gerou um log auditável de toda a carga de dados.
+
+As tabelas `fornecedor` e `produtos_filial` foram importadas com sucesso via CSV após os ajustes de tipo. As tabelas `pedido_compra`, `entradas_mercadoria` e `venda` foram importadas via scripts INSERT.
 
 ---
 
@@ -94,13 +152,12 @@ WHERE ordem_compra NOT IN (
 ### Concatenação, formatação de data e filtro por requisições > 10
 ```sql
 SELECT 
-    pc.pedido_id,
-    pc.produto_id || ' - ' || pc.descricao_produto AS produto,
-    TO_CHAR(pc.data_pedido, 'DD/MM/YYYY') AS data_solicitacao,
-    SUM(pc.qtde_pedida) AS qtde_requisitada
-FROM pedido_compra pc
-GROUP BY pc.pedido_id, pc.produto_id, pc.descricao_produto, pc.data_pedido
-HAVING SUM(pc.qtde_pedida) > 10
+    produto_id || ' - ' || descricao_produto AS produto,
+    TO_CHAR(MIN(data_pedido), 'DD/MM/YYYY') AS data_solicitacao,
+    SUM(qtde_pedida) AS qtde_requisitada
+FROM pedido_compra
+GROUP BY produto_id, descricao_produto
+HAVING SUM(qtde_pedida) > 10
 ORDER BY qtde_requisitada DESC;
 ```
 
@@ -132,7 +189,7 @@ A reunião de validação tem como objetivo garantir que os dados importados par
 ### 1. Principais pontos a validar
 
 **Volume e integridade das vendas**
-A base contém vendas de janeiro a março de 2025. O foco da validação é fevereiro/2025, conforme solicitado no case. Confirmar com o cliente o total de transações do período — quantidade de notas, produtos vendidos e valor total faturado. Qualquer divergência em relação ao sistema de origem precisa ser investigada antes do próximo periodo.
+A base contém vendas de janeiro a março de 2025. O foco da validação é fevereiro/2025, conforme solicitado no case. Confirmar com o cliente o total de transações do período — quantidade de notas, produtos vendidos e valor total faturado. Qualquer divergência em relação ao sistema de origem precisa ser investigada antes da virada.
 
 **Pedidos de compra pendentes**
 Apresentar a lista de pedidos que foram feitos mas ainda não tiveram entrada registrada. O cliente precisa confirmar se esses pedidos realmente estão em aberto ou se houve falha no registro da entrada.
@@ -144,13 +201,13 @@ Mostrar os casos onde a quantidade pedida é diferente da quantidade recebida. O
 Verificar se todos os produtos ativos estão cadastrados com preço, estoque e fornecedor corretos. Produtos com estoque zerado ou sem fornecedor vinculado precisam de atenção especial.
 
 **Rastreabilidade das entradas**
-Confirmar que todas as entradas de mercadoria estão vinculadas a um pedido de compra pela . Entradas sem pedido vinculado podem indicar compras não planejadas ou erro de digitação.
+Confirmar que todas as entradas de mercadoria estão vinculadas a um pedido de compra pelo campo `ordem_compra`. Entradas sem pedido vinculado podem indicar compras não planejadas ou erro de digitação.
 
 ### 2. Técnicas para garantir exatidão e precisão
 
 - **Confronto com sistema de origem**: comparar os totais do banco com relatórios exportados do ERP ou sistema atual do cliente — se os números baterem, a importação foi bem-sucedida
 - **Contagem de registros**: validar que o número de linhas importadas corresponde ao número de registros na planilha original
-- **Verificação de nulos**: checar se campos obrigatórios como ,  e  estão todos preenchidos
+- **Verificação de nulos**: checar se campos obrigatórios como `produto_id`, `data_emissao` e `valor_unitario` estão todos preenchidos
 - **Validação de chaves**: garantir que não existem registros duplicados nas chaves primárias
 - **Cruzamento de tabelas**: cruzar pedidos x entradas x vendas para garantir rastreabilidade ponta a ponta
 
