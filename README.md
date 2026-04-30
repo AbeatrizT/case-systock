@@ -4,14 +4,16 @@
 - PostgreSQL 16
 - pgAdmin 4
 
+> **Observação sobre a ferramenta:** O case recomenda o DBeaver como interface de acesso ao banco. Durante a instalação, o DBeaver apresentou falha persistente no carregamento do driver JDBC do PostgreSQL, impedindo a conexão mesmo após tentativas de configuração manual do arquivo `.jar`. Como alternativa, foi utilizado o **pgAdmin 4**, que já vem incluso na instalação do PostgreSQL 16 e oferece as mesmas funcionalidades necessárias para a execução do teste.
+
 ---
 
 ## Parte 1 – Documentação do Processo de Importação
 
 ### Ferramenta utilizada
 A importação foi realizada em duas etapas:
-1. **pgAdmin 4 (Import/Export)** para tentativa de importação direta do CSV — processo que evidenciou incompatibilidades de tipos de dados entre a planilha e as DDLs fornecidas
-2. **Scripts SQL (INSERT)** para garantir controle total sobre os tipos e valores inseridos no banco PostgreSQL 16
+1. **pgAdmin 4 (Import/Export CSV)** para tentativa de importação direta — processo que evidenciou incompatibilidades de tipos de dados entre a planilha e as DDLs fornecidas
+2. **Scripts SQL com comandos INSERT** executados diretamente no Query Tool do pgAdmin, garantindo controle total sobre os tipos e valores inseridos
 
 ### Estrutura da planilha
 A planilha `base_teste_systock.xlsx` continha 5 abas, cada uma correspondendo a uma tabela do banco:
@@ -21,53 +23,12 @@ A planilha `base_teste_systock.xlsx` continha 5 abas, cada uma correspondendo a 
 | venda | 33 | venda_id, data_emissao, produto_id, qtde_vendida, valor_unitario |
 | pedido_compra | 29 | pedido_id, data_pedido, produto_id, ordem_compra, qtde_pedida |
 | entradas_mercadoria | 20 | nro_nfe, data_entrada, produto_id, ordem_compra, qtde_recebida |
-| produtos_filial | 20 | produto_id, descricao, estoque, preco_venda, idfornecedor |
+| produtos_filial | 20 | produto_id, descricao, estoque, preco_venda, idfonecedor |
 | fornecedor | 20 | idfornecedor, razao_social |
 
 ### Erros intencionais identificados nas DDLs
 
-Durante a análise das DDLs fornecidas, foram identificados os seguintes erros:
-
-**1. Tabela `entradas_mercadoria`**
-A coluna `ordem_compra` era utilizada na PRIMARY KEY mas não estava declarada no `CREATE TABLE`. Correção: coluna adicionada na definição da tabela.
-
-**2. Tabela `produtos_filial`**
-- PRIMARY KEY referenciava `idproduto`, mas a coluna declarada era `produto_id`
-- Nome da coluna `decricao` com erro de digitação (faltava o 's')
-- Faltava vírgula antes da CONSTRAINT
-- Coluna `idfonecedor` declarada como `integer`, mas os dados reais usavam formato texto (ex: F8, F9)
-
-Correções aplicadas: padronização dos nomes, adição da vírgula e alteração do tipo para `varchar(25)`.
-
-**3. Tabela `fornecedor`**
-PRIMARY KEY referenciava `idproduto`, coluna inexistente nessa tabela. Correção: PRIMARY KEY ajustada para apenas `idforncedor`.
-
-### Tratamentos aplicados na planilha
-
-**1. Conversão de datas**
-Os campos de data (`data_emissao`, `data_pedido`, `data_entrega`, `data_entrada`) estavam no formato padrão do Excel. Foram convertidos para o formato `YYYY-MM-DD` exigido pelo PostgreSQL para o tipo `date`.
-
-**2. Remoção de colunas extras**
-A aba `pedido_compra` continha 11 colunas completamente vazias (`Unnamed: 12` até `Unnamed: 22`), provavelmente resultado de formatação residual da planilha. Essas colunas foram ignoradas na importação pois não correspondiam a nenhuma coluna da tabela.
-
-**3. Incompatibilidade de tipos numéricos**
-Campos como `fornecedor_id` e `filial_id` estavam armazenados como float (`1.0`, `2.0`) na planilha, mas a DDL original os definia como `integer`. Isso causou falha na importação direta via pgAdmin. Solução: os tipos das colunas foram ajustados para `float8` via `ALTER TABLE` para aceitar os valores da planilha sem perda de dados.
-
-**4. Coluna `qtde_pendente` ausente na planilha**
-A DDL do `pedido_compra` define a coluna `qtde_pendente float8 DEFAULT 0 NOT NULL`, porém essa coluna não existe na planilha fornecida. Trata-se de um campo calculado (qtde_pedida - qtde_entregue) que deveria ser derivado, não fornecido diretamente. A coluna foi mantida na tabela com valor `DEFAULT 0` e pode ser atualizada posteriormente com:
-```sql
-UPDATE pedido_compra SET qtde_pendente = qtde_pedida - qtde_entregue;
-```
-
-**5. Coluna `idfonecedor` com tipo incompatível**
-Na DDL original, `idfonecedor` em `produtos_filial` foi definida como `integer`. Porém, na planilha os valores são alfanuméricos no formato `F1`, `F2`, ..., `F20`. O tipo foi alterado para `varchar(25)` via `ALTER TABLE` para aceitar os dados reais:
-```sql
-ALTER TABLE produtos_filial ALTER COLUMN idfonecedor TYPE varchar(25);
-```
-
-### Ajustes e correções nas DDLs originais
-
-As DDLs fornecidas no case continham erros intencionais que impediam a criação das tabelas. Abaixo estão todos os erros identificados e as correções aplicadas:
+As DDLs fornecidas no case continham erros que impediam a criação das tabelas. Abaixo estão todos os erros identificados e as correções aplicadas:
 
 **Erro 1 — `entradas_mercadoria`: coluna `ordem_compra` ausente na definição**
 A PRIMARY KEY da tabela referenciava `ordem_compra`, mas essa coluna não estava declarada no `CREATE TABLE`. Sem ela, o banco retornaria erro ao tentar criar a tabela.
@@ -99,11 +60,41 @@ CONSTRAINT produtos_filial_pkey ...
 ```
 
 **Erro 5 — `fornecedor`: PRIMARY KEY referenciando coluna inexistente**
-A CONSTRAINT definia `PRIMARY KEY (idforncedor, idproduto)`, mas `idproduto` não existe na tabela `fornecedor`. A tabela de fornecedor só tem `idforncedor` e `razao_social`.
+A CONSTRAINT definia `PRIMARY KEY (idforncedor, idproduto)`, mas `idproduto` não existe na tabela `fornecedor`. A tabela tem apenas `idforncedor` e `razao_social`.
 ```sql
 -- Correção: PRIMARY KEY ajustada para apenas a coluna existente
 CONSTRAINT fornecedor_pkey PRIMARY KEY (idforncedor)
 ```
+
+### Tratamentos aplicados na planilha
+
+**1. Conversão de datas**
+Os campos de data (`data_emissao`, `data_pedido`, `data_entrega`, `data_entrada`) estavam no formato padrão do Excel. Foram convertidos para o formato `YYYY-MM-DD` exigido pelo PostgreSQL para o tipo `date`.
+
+**2. Remoção de colunas extras**
+A aba `pedido_compra` continha 11 colunas completamente vazias (`Unnamed: 12` até `Unnamed: 22`), provavelmente resultado de formatação residual da planilha. Essas colunas foram ignoradas na importação pois não correspondiam a nenhuma coluna da tabela.
+
+**3. Incompatibilidade de tipos numéricos**
+Campos como `fornecedor_id` e `filial_id` estavam armazenados como float (`1.0`, `2.0`) na planilha, mas a DDL original os definia como `integer`. Isso causou falha na importação direta via pgAdmin. Solução: os tipos foram ajustados via `ALTER TABLE`:
+```sql
+ALTER TABLE pedido_compra ALTER COLUMN filial_id TYPE float8;
+ALTER TABLE pedido_compra ALTER COLUMN fornecedor_id TYPE float8;
+```
+
+**4. Coluna `qtde_pendente` ausente na planilha**
+A DDL do `pedido_compra` define a coluna `qtde_pendente float8 DEFAULT 0 NOT NULL`, porém essa coluna não existe na planilha fornecida. Trata-se de um campo calculado (qtde_pedida - qtde_entregue) que deveria ser derivado, não fornecido diretamente. A coluna foi mantida na tabela com valor `DEFAULT 0` e pode ser atualizada com:
+```sql
+UPDATE pedido_compra SET qtde_pendente = qtde_pedida - qtde_entregue;
+```
+
+**5. Coluna `idfonecedor` com tipo incompatível**
+Na DDL original, `idfonecedor` em `produtos_filial` foi definida como `integer`. Porém, na planilha os valores são alfanuméricos no formato `F1`, `F2`, ..., `F20`. O tipo foi alterado para `varchar(25)`:
+```sql
+ALTER TABLE produtos_filial ALTER COLUMN idfonecedor TYPE varchar(25);
+```
+
+**6. Pedidos sem ordem de compra vinculada**
+Os registros de `pedido_compra` com `pedido_id` entre 19 e 29 possuem `ordem_compra = 0`, indicando que não foram vinculados a nenhuma ordem de compra. Esses registros aparecem corretamente como pendentes na consulta de produtos não recebidos, pois `ordem_compra = 0` não existe na tabela `entradas_mercadoria`.
 
 ### Método de importação final
 
@@ -153,7 +144,7 @@ WHERE ordem_compra NOT IN (
 ```sql
 SELECT 
     produto_id || ' - ' || descricao_produto AS produto,
-    TO_CHAR(MIN(data_pedido), 'DD/MM/YYYY') AS data_solicitacao,
+    TO_CHAR(MIN(data_pedido), 'DD/MM/YYYY') AS data_solicitacao, -- primeira data de requisição do produto
     SUM(qtde_pedida) AS qtde_requisitada
 FROM pedido_compra
 GROUP BY produto_id, descricao_produto
@@ -189,10 +180,10 @@ A reunião de validação tem como objetivo garantir que os dados importados par
 ### 1. Principais pontos a validar
 
 **Volume e integridade das vendas**
-A base contém vendas de janeiro a março de 2025. O foco da validação é fevereiro/2025, conforme solicitado no case. Confirmar com o cliente o total de transações do período — quantidade de notas, produtos vendidos e valor total faturado. Qualquer divergência em relação ao sistema de origem precisa ser investigada antes da virada.
+A base contém vendas de janeiro a março de 2025. O foco da validação é fevereiro/2025, conforme solicitado no case. Confirmar com o cliente o total de transações do período — quantidade de notas, produtos vendidos e valor total faturado. Qualquer divergência em relação ao sistema de origem precisa ser investigada e resolvida antes da entrada em produção do sistema.
 
 **Pedidos de compra pendentes**
-Apresentar a lista de pedidos que foram feitos mas ainda não tiveram entrada registrada. O cliente precisa confirmar se esses pedidos realmente estão em aberto ou se houve falha no registro da entrada.
+Apresentar a lista de pedidos que foram feitos mas ainda não tiveram entrada registrada. O cliente precisa confirmar se esses pedidos realmente estão em aberto ou se houve falha no registro da entrada. Atenção especial para os pedidos com `ordem_compra = 0`, que indicam pedidos sem vínculo com uma ordem de compra — isso pode ser erro de lançamento ou compra não planejada.
 
 **Consistência entre pedido e recebimento**
 Mostrar os casos onde a quantidade pedida é diferente da quantidade recebida. O cliente precisa validar se as divergências são esperadas (entregas parciais) ou se indicam erro de lançamento.
@@ -211,7 +202,7 @@ Confirmar que todas as entradas de mercadoria estão vinculadas a um pedido de c
 - **Validação de chaves**: garantir que não existem registros duplicados nas chaves primárias
 - **Cruzamento de tabelas**: cruzar pedidos x entradas x vendas para garantir rastreabilidade ponta a ponta
 
-### Consultas de apoio para a reunião
+### 3. Consultas de apoio para a reunião
 ```sql
 -- Total de vendas em fevereiro/2025
 SELECT COUNT(*) AS total_transacoes,
@@ -222,11 +213,16 @@ WHERE EXTRACT(MONTH FROM data_emissao) = 2
 AND EXTRACT(YEAR FROM data_emissao) = 2025;
 
 -- Pedidos sem entrada vinculada
-SELECT pedido_id, produto_id, descricao_produto, data_pedido, qtde_pedida
+SELECT pedido_id, produto_id, descricao_produto, data_pedido, qtde_pedida, ordem_compra
 FROM pedido_compra
 WHERE ordem_compra NOT IN (
     SELECT ordem_compra FROM entradas_mercadoria
 );
+
+-- Pedidos com ordem_compra = 0 (sem vínculo com ordem de compra)
+SELECT pedido_id, produto_id, descricao_produto, data_pedido, qtde_pedida
+FROM pedido_compra
+WHERE ordem_compra = 0;
 
 -- Produtos com estoque zerado
 SELECT produto_id, descricao, estoque
